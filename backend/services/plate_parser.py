@@ -14,19 +14,39 @@ _MAKE_DISPLAY = {
     "JLG": "JLG", "JCB": "JCB",
 }
 
-# Words that are plate field labels, never field values
+# Words that appear on plates as field labels, never as values
 _LABEL_WORDS = {
     "NUMBER", "NUMBERS", "UMBER", "YEAR", "CAPACITY", "WEIGHT", "NO", "NUM",
     "HEIGHT", "WIDTH", "LENGTH", "DATE", "TYPE", "CODE", "MODEL", "MDL",
     "SERIAL", "MANUFACTURE", "MANUFACTURED", "ONLY", "CHART", "INDUSTRIES",
-    "EQUIPMENT", "INC", "LLC", "LTD", "MFG", "MFD",
+    "EQUIPMENT", "INC", "LLC", "LTD", "MFG", "MFD", "MAXIMUM", "MACHINE",
 }
 
-# OCR commonly misreads digits as these letters — normalize for make matching
-_DIGIT_TO_ALPHA = str.maketrans("01528", "OISBZ")
+# Lines that are purely field labels (never contain values themselves)
+_LABEL_LINE_RE = re.compile(
+    r"^(?:MODEL|SERIAL|SER|S/?N|TYPE|MDL|YEAR|CAPACITY|WEIGHT|HEIGHT|WIDTH|"
+    r"LENGTH|MAXIMUM|MFG|MFD)\b.*$",
+    re.IGNORECASE,
+)
 
-# Predominantly-numeric serial: normalize letters that look like digits
+# Digit → look-alike letter (for make fuzzy matching: OCR may read letters as digits)
+# 0→O, 1→I, 5→S, 2→Z, 8→B
+_DIGIT_TO_ALPHA = str.maketrans("01528", "OISZB")
+
+# Letter → look-alike digit (for serial normalization in numeric-heavy strings)
+# O→0, I→1, L→1, S→5, B→8, Z→2
 _ALPHA_TO_DIGIT = str.maketrans("OILSBZ", "011582")
+
+# Standalone model number patterns
+_MODEL_PATTERNS = [
+    r"^[A-Z]{1,4}-\d{2,4}[A-Z]{0,3}$",        # S-60, Z-62, GS-3232
+    r"^[A-Z]{1,5}\d{2,4}[A-Z]{0,4}$",          # SJ1256THS, 450AJ, GS3232
+    r"^[A-Z]{1,3}\d{2,4}[-/]\d{1,4}[A-Z]?$",  # Z-62/22, T40-170
+    r"^[A-Z]{2,4}\s\d{2,4}[A-Z]{0,3}$",        # SJ 3219, GS 1932
+    r"^\d{2,4}[A-Z]{2,5}$",                     # 860SJ, 40AJ
+    r"^[A-Z]{2,4}\d{3,5}$",                     # HA16, SJ30, GS3246
+    r"^[A-Z]\d{3,4}[A-Z]{2,4}$",               # M600J, S60HC
+]
 
 
 def parse_plate(raw_text: str) -> tuple[MachineIdentity, str]:
@@ -67,14 +87,16 @@ def _find_make(lines: list[str]) -> str | None:
             if re.search(rf"(?<![A-Z0-9]){re.escape(make)}(?![A-Z0-9])", line):
                 return _display_make(make)
 
-    # Pass 2: fuzzy match — same token length, 80%+ similarity after OCR normalization
+    # Pass 2: token-level fuzzy match (handles single-char OCR errors)
+    # Normalize digits that look like letters before comparing
     for line in lines:
         tokens = re.findall(r"[A-Z0-9]{3,}", line)
         for token in tokens:
+            normalized = token.translate(_DIGIT_TO_ALPHA)
             for make in KNOWN_MAKES:
-                if len(token) == len(make):
-                    normalized = token.translate(_DIGIT_TO_ALPHA)
-                    if SequenceMatcher(None, normalized, make).ratio() >= 0.80:
+                if len(normalized) == len(make):
+                    ratio = SequenceMatcher(None, normalized, make).ratio()
+                    if ratio >= 0.80:
                         return _display_make(make)
     return None
 
@@ -84,31 +106,70 @@ def _display_make(make: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+
+_MODEL_LABEL_RE = re.compile(r"^(?:MODEL|MOD(?:EL)?|MDL|TYPE)\s*[.:#/]?\s*", re.IGNORECASE)
+
+def _find_model(lines: list[str]) -> str | None:
+    # Pass 1: inline label + value on same line ("MODEL: 450AJ")
+    for line in lines:
+        m = _MODEL_LABEL_RE.match(line)
+        if m:
+            remainder = line[m.end():].strip()
+            tok = re.match(r"([A-Z0-9][\w/.-]{1,20})", remainder)
+            if tok and _is_value(tok.group(1)):
+                return tok.group(1)
+
+    # Pass 2: label on its own line — look at subsequent non-label lines for value
+    for i, line in enumerate(lines):
+        if _MODEL_LABEL_RE.fullmatch(line.rstrip(".:#/ ")) is None:
+            continue
+        val = _next_value(lines, i, _is_model_shaped)
+        if val:
+            return val
+
+    # Pass 3: standalone model-shaped token anywhere on its own line
+    for line in lines:
+        clean = line.strip()
+        if _is_model_shaped(clean) and _is_value(clean):
+            return clean
+    return None
+
+
+def _is_model_shaped(val: str) -> bool:
+    return any(re.match(p, val) for p in _MODEL_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
 # Serial number
 # ---------------------------------------------------------------------------
 
-_SERIAL_LABELS = re.compile(
+_SERIAL_LABEL_RE = re.compile(
     r"^(?:SERIAL(?:\s*(?:NO?|NUMBER|NUM))?|SER(?:\s*NO?)?|S/?N)\s*[.:#/]?\s*",
     re.IGNORECASE,
 )
 
 def _find_serial(lines: list[str]) -> str | None:
-    # Pass 1: label on same line as value ("SERIAL NO: 0300123456")
-    for i, line in enumerate(lines):
-        m = _SERIAL_LABELS.match(line)
+    # Pass 1: inline label + value on same line ("SERIAL NO: 0300123456")
+    for line in lines:
+        m = _SERIAL_LABEL_RE.match(line)
         if m:
             remainder = line[m.end():].strip()
-            val = re.match(r"([A-Z0-9][\w]{4,20})", remainder)
-            if val and _is_value(val.group(1)):
-                return _normalize_serial(val.group(1))
+            tok = re.match(r"([A-Z0-9][\w]{4,20})", remainder)
+            if tok and _is_serial_candidate(tok.group(1)):
+                return _normalize_serial(tok.group(1))
 
-        # Pass 2: label on its own line, value on the next line
-        if _SERIAL_LABELS.fullmatch(line.rstrip(".:#/ ")):
-            val = _first_token(lines, i + 1)
-            if val and any(c.isdigit() for c in val):
-                return _normalize_serial(val)
+    # Pass 2: label on its own line — look at subsequent non-label lines for a serial value
+    # Serial values must have digits and must NOT look like a model number
+    for i, line in enumerate(lines):
+        if _SERIAL_LABEL_RE.fullmatch(line.rstrip(".:#/ ")) is None:
+            continue
+        val = _next_value(lines, i, _is_serial_candidate)
+        if val:
+            return _normalize_serial(val)
 
-    # Pass 3: fallback — long numeric sequence (7–12 digits)
+    # Pass 3: long numeric sequence (7–12 digits) — common for Skyjack, Crown, etc.
     text_block = " ".join(lines)
     m = re.search(r"\b(\d{7,12})\b", text_block)
     if m:
@@ -116,8 +177,20 @@ def _find_serial(lines: list[str]) -> str | None:
     return None
 
 
+def _is_serial_candidate(val: str) -> bool:
+    """A serial must have digits, be a reasonable length, and not look like a model number."""
+    if not any(c.isdigit() for c in val):
+        return False
+    if len(val) < 5:
+        return False
+    # If it's short AND model-shaped, it's probably a model, not a serial
+    if len(val) <= 10 and _is_model_shaped(val):
+        return False
+    return True
+
+
 def _normalize_serial(serial: str) -> str:
-    """In a predominantly-numeric serial, swap letters that look like digits."""
+    """In predominantly-numeric serials, swap letters that look like digits."""
     digits = sum(c.isdigit() for c in serial)
     alphas = sum(c.isalpha() for c in serial)
     if digits > alphas:
@@ -126,63 +199,28 @@ def _normalize_serial(serial: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Model
+# Shared helpers
 # ---------------------------------------------------------------------------
 
-_MODEL_LABELS = re.compile(
-    r"^(?:MODEL|MOD(?:EL)?|MDL|TYPE)\s*[.:#/]?\s*",
-    re.IGNORECASE,
-)
-
-# Patterns that look like standalone model numbers (no label needed)
-_MODEL_STANDALONE = [
-    r"^[A-Z]{1,4}-\d{2,4}[A-Z]{0,3}$",        # S-60, Z-62, GS-3232
-    r"^[A-Z]{1,5}\d{2,4}[A-Z]{0,4}$",          # 450AJ, GS3232, E300AJP
-    r"^[A-Z]{1,3}\d{2,4}[-/]\d{1,4}[A-Z]?$",  # Z-62/22, T40-170
-    r"^[A-Z]{2,4}\s\d{2,4}[A-Z]{0,3}$",        # SJ 3219, GS 1932
-    r"^\d{2,4}[A-Z]{2,5}$",                     # 450AJ, 860SJ
-    r"^[A-Z]{2,4}\d{3,5}$",                     # HA16, SJ30, GS3246
-    r"^[A-Z]\d{3,4}[A-Z]{2,4}$",               # M600J, S60HC
-]
-
-def _find_model(lines: list[str]) -> str | None:
-    # Pass 1: label on same line ("MODEL: 450AJ")
-    for i, line in enumerate(lines):
-        m = _MODEL_LABELS.match(line)
-        if m:
-            remainder = line[m.end():].strip()
-            val = re.match(r"([A-Z0-9][\w/.-]{1,20})", remainder)
-            if val and _is_value(val.group(1)):
-                return val.group(1)
-
-        # Pass 2: label alone on one line, value on next
-        if _MODEL_LABELS.fullmatch(line.rstrip(".:#/ ")):
-            val = _first_token(lines, i + 1)
-            if val and _is_value(val):
-                return val
-
-    # Pass 3: standalone model-number token
-    for line in lines:
-        clean = line.strip()
-        for pattern in _MODEL_STANDALONE:
-            if re.match(pattern, clean) and _is_value(clean):
-                return clean
+def _next_value(lines: list[str], label_idx: int, validator) -> str | None:
+    """Return the first token from lines after label_idx that passes validator,
+    skipping any lines that are themselves field labels."""
+    for j in range(label_idx + 1, min(label_idx + 5, len(lines))):
+        candidate_line = lines[j].strip()
+        if _LABEL_LINE_RE.match(candidate_line):
+            continue  # this line is another label, skip it
+        tok = re.match(r"([A-Z0-9][\w/.-]{1,25})", candidate_line)
+        if tok and _is_value(tok.group(1)) and validator(tok.group(1)):
+            return tok.group(1)
     return None
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _is_value(val: str) -> bool:
     return val.upper() not in _LABEL_WORDS and len(val) >= 2
 
 
-def _first_token(lines: list[str], idx: int) -> str | None:
-    if idx >= len(lines):
-        return None
-    m = re.match(r"([A-Z0-9][\w/.-]{1,25})", lines[idx].strip())
-    return m.group(1) if m else None
+def _is_label_line(line: str) -> bool:
+    return bool(_LABEL_LINE_RE.match(line.strip()))
 
 
 def _find_year(lines: list[str]) -> int | None:
