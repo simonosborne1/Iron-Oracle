@@ -26,12 +26,26 @@ export function useAppFlow() {
     }
   }, []);
 
-  const runManualSearch = useCallback(async () => {
-    if (!machine) return;
+  // Accepts corrected make/model/serial from the editable MachineCard
+  const runManualSearch = useCallback(async (
+    make: string, model: string, serial: string
+  ) => {
     setError(null);
+    const updated: MachineIdentity = {
+      make: make || null,
+      model: model || null,
+      serial_number: serial || null,
+      year: machine?.year ?? null,
+      capacity: machine?.capacity ?? null,
+      voltage: machine?.voltage ?? null,
+      other_ids: machine?.other_ids ?? null,
+      confidence: machine?.confidence ?? 1.0,
+      notes: machine?.notes ?? null,
+    };
+    setMachine(updated);
     setStep("searching");
     try {
-      const res = await getManuals(machine);
+      const res = await getManuals(updated);
       setManuals(res.manuals);
       setManualStatus(res.search_status);
       setStep("manuals_done");
@@ -40,6 +54,33 @@ export function useAppFlow() {
       setStep("scan_done");
     }
   }, [machine]);
+
+  // Manual entry goes straight to search — no intermediate confirmation step
+  const enterManually = useCallback(async (make: string, model: string, serial: string) => {
+    setError(null);
+    const newMachine: MachineIdentity = {
+      make: make || null,
+      model: model || null,
+      serial_number: serial || null,
+      year: null,
+      capacity: null,
+      voltage: null,
+      other_ids: null,
+      confidence: 1.0,
+      notes: "Manually entered",
+    };
+    setMachine(newMachine);
+    setStep("searching");
+    try {
+      const res = await getManuals(newMachine);
+      setManuals(res.manuals);
+      setManualStatus(res.search_status);
+      setStep("manuals_done");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Manual search failed");
+      setStep("idle");
+    }
+  }, []);
 
   const runTorqueExtraction = useCallback(async (manualUrl: string) => {
     if (!machine) return;
@@ -55,22 +96,6 @@ export function useAppFlow() {
       setStep("manuals_done");
     }
   }, [machine]);
-
-  const enterManually = useCallback((make: string, model: string, serial: string) => {
-    setError(null);
-    setMachine({
-      make: make || null,
-      model: model || null,
-      serial_number: serial || null,
-      year: null,
-      capacity: null,
-      voltage: null,
-      other_ids: null,
-      confidence: 1.0,
-      notes: "Manually entered",
-    });
-    setStep("scan_done");
-  }, []);
 
   const reset = useCallback(() => {
     setStep("idle");

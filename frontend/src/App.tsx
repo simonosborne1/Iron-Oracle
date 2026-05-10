@@ -80,6 +80,7 @@ export default function App() {
             machine={machine}
             onFindManuals={runManualSearch}
             loading={step === "searching"}
+            key={`${machine.make}-${machine.model}-${machine.serial_number}`}
           />
         )}
 

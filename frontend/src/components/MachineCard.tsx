@@ -1,8 +1,9 @@
+import { useState, useEffect } from "react";
 import type { MachineIdentity } from "../types";
 
 interface Props {
   machine: MachineIdentity;
-  onFindManuals: () => void;
+  onFindManuals: (make: string, model: string, serial: string) => void;
   loading: boolean;
 }
 
@@ -12,54 +13,97 @@ function ConfidenceBadge({ value }: { value: number }) {
   return <span className={`text-xs font-mono ${color}`}>{pct}% confidence</span>;
 }
 
-function Field({ label, value }: { label: string; value: string | number | null | undefined }) {
-  if (!value) return null;
-  return (
-    <div>
-      <p className="text-xs text-gray-500 uppercase tracking-wide">{label}</p>
-      <p className="text-gray-100 font-medium">{value}</p>
-    </div>
-  );
-}
+const inputClass =
+  "bg-gray-800 text-white rounded-lg px-3 py-2.5 w-full focus:outline-none focus:ring-2 focus:ring-orange-500 text-base";
 
 export default function MachineCard({ machine, onFindManuals, loading }: Props) {
-  const lowConfidence = machine.confidence < 0.7;
+  const [make, setMake] = useState(machine.make ?? "");
+  const [model, setModel] = useState(machine.model ?? "");
+  const [serial, setSerial] = useState(machine.serial_number ?? "");
+
+  // Re-sync fields if a new scan result arrives
+  useEffect(() => {
+    setMake(machine.make ?? "");
+    setModel(machine.model ?? "");
+    setSerial(machine.serial_number ?? "");
+  }, [machine]);
+
+  const isManual = machine.notes === "Manually entered";
+  const lowConfidence = !isManual && machine.confidence < 0.7;
+  const canSearch = make.trim() || model.trim() || serial.trim();
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-xl font-bold text-orange-400">
-            {machine.make ?? "Unknown Make"}
-          </h2>
-          <p className="text-gray-300">{machine.model ?? "Unknown Model"}</p>
-        </div>
-        <ConfidenceBadge value={machine.confidence} />
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500 uppercase tracking-wide font-medium">
+          {isManual ? "Manual Entry" : "Plate Identified"}
+        </p>
+        {!isManual && <ConfidenceBadge value={machine.confidence} />}
       </div>
 
       {lowConfidence && (
         <div className="bg-yellow-900/40 border border-yellow-700 rounded-lg p-3 text-yellow-300 text-sm">
-          Low confidence — consider retaking the photo with better lighting.
+          Low confidence — check and correct the fields below if needed.
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Serial Number" value={machine.serial_number} />
-        <Field label="Year" value={machine.year} />
-        <Field label="Capacity" value={machine.capacity} />
-        <Field label="Voltage" value={machine.voltage} />
-        {machine.other_ids && Object.entries(machine.other_ids).map(([k, v]) => (
-          <Field key={k} label={k} value={v} />
-        ))}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500 uppercase tracking-wide">Make</label>
+          <input
+            value={make}
+            onChange={(e) => setMake(e.target.value)}
+            placeholder="e.g. Skyjack"
+            className={inputClass}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500 uppercase tracking-wide">Model</label>
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="e.g. SJ1256THS"
+            className={inputClass}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500 uppercase tracking-wide">Serial Number</label>
+          <input
+            value={serial}
+            onChange={(e) => setSerial(e.target.value)}
+            placeholder="e.g. 87410194"
+            className={inputClass}
+          />
+        </div>
+
+        {/* Read-only supplementary fields */}
+        {(machine.year || machine.capacity || machine.voltage) && (
+          <div className="grid grid-cols-3 gap-2 pt-1">
+            {machine.year && (
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Year</p>
+                <p className="text-gray-300 text-sm font-medium">{machine.year}</p>
+              </div>
+            )}
+            {machine.capacity && (
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Capacity</p>
+                <p className="text-gray-300 text-sm font-medium">{machine.capacity}</p>
+              </div>
+            )}
+            {machine.voltage && (
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Voltage</p>
+                <p className="text-gray-300 text-sm font-medium">{machine.voltage}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {machine.notes && (
-        <p className="text-gray-500 text-xs italic">{machine.notes}</p>
-      )}
-
       <button
-        onClick={onFindManuals}
-        disabled={loading}
+        onClick={() => onFindManuals(make.trim(), model.trim(), serial.trim())}
+        disabled={loading || !canSearch}
         className="w-full py-3 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-semibold rounded-xl transition-colors"
       >
         {loading ? "Searching…" : "Find Manuals"}
