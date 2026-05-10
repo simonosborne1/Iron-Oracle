@@ -77,8 +77,8 @@ export default function MachineCard({ machine, onFindManuals, loading }: Props) 
         </div>
 
         {/* Read-only supplementary fields */}
-        {(machine.year || machine.capacity || machine.voltage) && (
-          <div className="grid grid-cols-3 gap-2 pt-1">
+        {(machine.year || machine.capacity) && (
+          <div className="grid grid-cols-2 gap-2 pt-1">
             {machine.year && (
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Year</p>
@@ -89,12 +89,6 @@ export default function MachineCard({ machine, onFindManuals, loading }: Props) 
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Capacity</p>
                 <p className="text-gray-300 text-sm font-medium">{machine.capacity}</p>
-              </div>
-            )}
-            {machine.voltage && (
-              <div>
-                <p className="text-xs text-gray-500 uppercase tracking-wide">Voltage</p>
-                <p className="text-gray-300 text-sm font-medium">{machine.voltage}</p>
               </div>
             )}
           </div>

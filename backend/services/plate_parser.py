@@ -113,12 +113,14 @@ _MODEL_LABEL_RE = re.compile(r"^(?:MODEL|MOD(?:EL)?|MDL|TYPE)\s*[.:#/]?\s*", re.
 
 def _find_model(lines: list[str]) -> str | None:
     # Pass 1: inline label + value on same line ("MODEL: 450AJ")
+    # Value must have at least one digit OR match a model shape — this rejects
+    # OCR garble like "Model yex" where the OCR misread "Model year/number"
     for line in lines:
         m = _MODEL_LABEL_RE.match(line)
         if m:
             remainder = line[m.end():].strip()
             tok = re.match(r"([A-Z0-9][\w/.-]{1,20})", remainder)
-            if tok and _is_value(tok.group(1)):
+            if tok and _is_value(tok.group(1)) and _is_plausible_model(tok.group(1)):
                 return tok.group(1)
 
     # Pass 2: label on its own line — look at subsequent non-label lines for value
@@ -139,6 +141,12 @@ def _find_model(lines: list[str]) -> str | None:
 
 def _is_model_shaped(val: str) -> bool:
     return any(re.match(p, val) for p in _MODEL_PATTERNS)
+
+
+def _is_plausible_model(val: str) -> bool:
+    """Model values extracted from a label must contain a digit or match a known shape.
+    Rejects pure-letter OCR noise like 'YEX' (misread of 'year'/'number')."""
+    return any(c.isdigit() for c in val) or _is_model_shaped(val)
 
 
 # ---------------------------------------------------------------------------
